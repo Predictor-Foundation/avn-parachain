@@ -124,7 +124,7 @@ fn create_signed_deregister_proof(
     registrar_key_pair: &TestAccount,
     relayer: &AccountId,
     owner: &AccountId,
-    nodes_to_deregister: &BoundedVec<NodeId<TestRuntime>, MaxNodesToDeregister>,
+    nodes_to_deregister: &BoundedVec<NodeId<TestRuntime>, MaxNodes>,
     number_of_nodes_to_deregister: &u32,
     block_number: &BlockNumberFor<TestRuntime>,
 ) -> Proof<SignatureTest, AccountId> {
@@ -461,6 +461,62 @@ fn deregistration_returns_reserved_stake() {
         // Reserved balance must be returned to free balance
         assert_eq!(Balances::reserved_balance(&context.owner), 0);
         assert_eq!(Balances::free_balance(&context.owner), stake_amount * 2);
+    });
+}
+
+#[test]
+fn deregistration_removes_genesis_override_if_present() {
+    let (mut ext, _pool_state, _offchain_state) = ExtBuilder::build_default()
+        .with_genesis_config()
+        .with_authors()
+        .for_offchain_worker()
+        .as_externality_with_state();
+    ext.execute_with(|| {
+        let context = Context::new(1u8);
+        let node = context.registered_nodes[0];
+        let node_serial = NodeRegistry::<TestRuntime>::get(&node).unwrap().serial_number;
+
+        assert_ok!(NodeManager::set_genesis_override(
+            RuntimeOrigin::signed(context.registrar),
+            BoundedVec::truncate_from(vec![node]),
+            Some(GenesisBonus::Genesis50),
+        ));
+        assert_eq!(
+            GenesisOverrides::<TestRuntime>::get(node_serial),
+            Some(GenesisBonus::Genesis50)
+        );
+
+        assert_ok!(NodeManager::deregister_nodes(
+            RuntimeOrigin::signed(context.registrar),
+            context.owner,
+            BoundedVec::truncate_from(vec![node]),
+        ));
+
+        assert_eq!(GenesisOverrides::<TestRuntime>::get(node_serial), None);
+    });
+}
+
+#[test]
+fn deregistration_succeeds_when_no_genesis_override_is_present() {
+    let (mut ext, _pool_state, _offchain_state) = ExtBuilder::build_default()
+        .with_genesis_config()
+        .with_authors()
+        .for_offchain_worker()
+        .as_externality_with_state();
+    ext.execute_with(|| {
+        let context = Context::new(1u8);
+        let node = context.registered_nodes[0];
+        let node_serial = NodeRegistry::<TestRuntime>::get(&node).unwrap().serial_number;
+
+        assert_eq!(GenesisOverrides::<TestRuntime>::get(node_serial), None);
+
+        assert_ok!(NodeManager::deregister_nodes(
+            RuntimeOrigin::signed(context.registrar),
+            context.owner,
+            BoundedVec::truncate_from(vec![node]),
+        ));
+
+        assert_eq!(GenesisOverrides::<TestRuntime>::get(node_serial), None);
     });
 }
 
