@@ -31,6 +31,7 @@ clap = { version = "4.5.3", features = ["derive"] }
 smallvec = "1.11.0"
 docify = "0.2.8"
 parking_lot = { version = "0.12.3" }
+test-case = "3.3.1"
 
 # Polkadot dependencies
 codec = { package = "parity-scale-codec", version = "3.6.12", default-features = false }
@@ -166,6 +167,8 @@ pallet-eth-bridge = { path = "./pallets/eth-bridge", default-features = false }
 pallet-eth-bridge-runtime-api = { path = "./pallets/eth-bridge/runtime-api", default-features = false }
 pallet-parachain-staking = { path = "./pallets/parachain-staking", default-features = false }
 pallet-avn-anchor = { path = "./pallets/avn-anchor", default-features = false }
+pallet-watchtower = { path = "./pallets/watchtower", default-features = false }
+pallet-summary-watchtower = { path = "./pallets/summary-watchtower", default-features = false }
 
 # Common Runtime
 node-primitives = { path = "./node/primitives/", default-features = false }
