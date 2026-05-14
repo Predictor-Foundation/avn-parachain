@@ -96,7 +96,7 @@ cumulus-primitives-parachain-inherent = { default-features = true, workspace = t
 cumulus-relay-chain-interface = { default-features = true, workspace = true }
 
 # AvN
-avn-service.workspace = true
+external-service.workspace = true
 pallet-eth-bridge = { default-features = true, workspace = true }
 pallet-eth-bridge-runtime-api = { default-features = true, workspace = true }
 

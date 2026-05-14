@@ -39,8 +39,8 @@ use sp_keystore::KeystorePtr;
 use substrate_prometheus_endpoint::Registry;
 
 use crate::{avn_config::*, RuntimeApi};
-use avn_service::node_integration::{self, NodeDeps};
 use cumulus_client_service::ParachainHostFunctions;
+use external_service::node_integration::{self, NodeDeps};
 use sc_transaction_pool_api::OffchainTransactionPoolFactory;
 
 #[docify::export(wasm_executor)]
@@ -414,14 +414,16 @@ pub async fn start_parachain_node(
         task_manager.spawn_essential_handle().spawn(
             "external-service",
             None,
-            avn_service::server::start(avn_state),
+            external_service::server::start(avn_state),
         );
 
         let eth_event_handler_config = node_integration::build_eth_event_handler_config(node_deps);
         task_manager.spawn_essential_handle().spawn(
             "eth-events-handler",
             None,
-            avn_service::ethereum_events_handler::start_eth_event_handler(eth_event_handler_config),
+            external_service::ethereum_events_handler::start_eth_event_handler(
+                eth_event_handler_config,
+            ),
         );
 
         start_consensus(
