@@ -11211,6 +11211,7 @@ dependencies = [
  "pallet-transaction-payment",
  "parity-scale-codec",
  "scale-info",
+ "serde",
  "sp-application-crypto",
  "sp-avn-common",
  "sp-core",
