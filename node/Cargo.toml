@@ -135,5 +135,4 @@ try-runtime = [
 ]
 
 [dev-dependencies]
-tempfile = "3.1.0"
 sp-version = { default-features = true, workspace = true }

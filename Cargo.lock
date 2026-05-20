@@ -1984,7 +1984,6 @@ dependencies = [
  "substrate-build-script-utils",
  "substrate-frame-rpc-system",
  "substrate-prometheus-endpoint",
- "tempfile",
 ]
 
 [[package]]
@@ -3127,6 +3126,7 @@ dependencies = [
  "sc-service",
  "sp-core",
  "sp-keystore",
+ "tempfile",
 ]
 
 [[package]]

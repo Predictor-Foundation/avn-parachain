@@ -15,3 +15,6 @@ sc-keystore = { default-features = true, workspace = true }
 sc-service = { default-features = true, workspace = true }
 sp-core = { default-features = true, workspace = true }
 sp-keystore = { default-features = true, workspace = true }
+
+ [dev-dependencies]
+ tempfile = "3.1.0"
