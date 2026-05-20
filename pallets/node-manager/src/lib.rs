@@ -15,8 +15,7 @@ use frame_support::{
     pallet_prelude::*,
     storage::{generator::StorageDoubleMap as StorageDoubleMapTrait, PrefixIterator},
     traits::{
-        tokens::BalanceStatus, Currency, ExistenceRequirement, IsSubType, ReservableCurrency,
-        StorageVersion, UnixTime,
+        Currency, ExistenceRequirement, IsSubType, ReservableCurrency, StorageVersion, UnixTime,
     },
     PalletId,
 };
@@ -1638,6 +1637,15 @@ pub mod pallet {
                 // Unreserve stake for this node if there is any
                 if !info.stake.amount.is_zero() {
                     Self::update_reserves(owner, info.stake.amount, StakeOperation::Remove)?;
+                    <TotalStake<T>>::try_mutate(owner, |total| -> Result<_, DispatchError> {
+                        *total = Some(
+                            total
+                                .unwrap_or_else(Zero::zero)
+                                .checked_sub(&info.stake.amount)
+                                .ok_or(Error::<T>::BalanceUnderflow)?,
+                        );
+                        Ok(())
+                    })?;
                 }
 
                 Self::deposit_event(Event::NodeDeregistered {
@@ -1645,6 +1653,23 @@ pub mod pallet {
                     node: node.clone(),
                 });
             }
+            Ok(())
+        }
+
+        // Moves `amount` of reserved balance from `from` to `to`, keeping it reserved on arrival.
+        // Unlike `repatriate_reserved`, this works even when `to` has no prior on-chain existence:
+        // unreserve makes the funds temporarily free, transfer creates the account if needed, then
+        // reserve locks them again on the destination side.
+        fn move_reserved_balance(
+            from: &T::AccountId,
+            to: &T::AccountId,
+            amount: BalanceOf<T>,
+        ) -> DispatchResult {
+            let leftover = T::Currency::unreserve(from, amount);
+            ensure!(leftover.is_zero(), Error::<T>::InsufficientStakedBalance);
+            T::Currency::transfer(from, to, amount, ExistenceRequirement::AllowDeath)
+                .map_err(|_| Error::<T>::InsufficientFreeBalance)?;
+            T::Currency::reserve(to, amount).map_err(|_| Error::<T>::ReserveFailed)?;
             Ok(())
         }
 
@@ -1689,13 +1714,7 @@ pub mod pallet {
             <OwnedNodesCount<T>>::mutate(new_owner, |c| *c = c.saturating_add(n));
 
             if !total_stake_moved.is_zero() {
-                T::Currency::repatriate_reserved(
-                    current_owner,
-                    new_owner,
-                    total_stake_moved,
-                    BalanceStatus::Reserved,
-                )
-                .map_err(|_| Error::<T>::InsufficientStakedBalance)?;
+                Self::move_reserved_balance(current_owner, new_owner, total_stake_moved)?;
 
                 <TotalStake<T>>::try_mutate(current_owner, |total| -> Result<_, DispatchError> {
                     *total = Some(
@@ -1716,82 +1735,6 @@ pub mod pallet {
                     Ok(())
                 })?;
             }
-
-            Ok(())
-        }
-
-        fn do_move_stake(
-            owner: &T::AccountId,
-            source_nodes: &BoundedVec<(NodeId<T>, Option<BalanceOf<T>>), MaxNodes>,
-            to_node: &NodeId<T>,
-        ) -> DispatchResult {
-            ensure!(!source_nodes.is_empty(), Error::<T>::EmptyNodeList);
-
-            let now = Self::time_now_sec();
-            let mut to_info =
-                NodeRegistry::<T>::get(to_node).ok_or(Error::<T>::NodeNotRegistered)?;
-            ensure!(to_info.owner == *owner, Error::<T>::NodeNotOwnedByOwner);
-            // Only allow moving if within the auto stake window. This is important because
-            // the unlock logic depends on the total stake of the node.
-            ensure!(now < to_info.auto_stake_expiry, Error::<T>::AutoStakeExpired);
-
-            let mut total_amount = BalanceOf::<T>::zero();
-            let mut seen = BTreeSet::new();
-
-            for (from_node, maybe_amount) in source_nodes {
-                ensure!(from_node != to_node, Error::<T>::SourceAndDestinationNodeMustBeDifferent);
-                ensure!(seen.insert(from_node), Error::<T>::DuplicateNodeInList);
-
-                let mut from_info =
-                    NodeRegistry::<T>::get(from_node).ok_or(Error::<T>::NodeNotRegistered)?;
-                ensure!(from_info.owner == *owner, Error::<T>::NodeNotOwnedByOwner);
-                ensure!(now < from_info.auto_stake_expiry, Error::<T>::AutoStakeExpired);
-
-                let amount = match maybe_amount {
-                    Some(amt) => {
-                        ensure!(*amt > BalanceOf::<T>::zero(), Error::<T>::ZeroAmount);
-                        ensure!(
-                            from_info.stake.amount >= *amt,
-                            Error::<T>::InsufficientStakedBalance
-                        );
-                        *amt
-                    },
-                    None => from_info.stake.amount,
-                };
-
-                if amount.is_zero() {
-                    continue
-                }
-
-                from_info.stake.amount = from_info
-                    .stake
-                    .amount
-                    .checked_sub(&amount)
-                    .ok_or(Error::<T>::BalanceUnderflow)?;
-                NodeRegistry::<T>::insert(from_node, from_info);
-
-                total_amount =
-                    total_amount.checked_add(&amount).ok_or(Error::<T>::BalanceOverflow)?;
-            }
-
-            if total_amount.is_zero() {
-                return Ok(())
-            }
-
-            to_info.stake.amount = to_info
-                .stake
-                .amount
-                .checked_add(&total_amount)
-                .ok_or(Error::<T>::BalanceOverflow)?;
-            NodeRegistry::<T>::insert(to_node, to_info);
-
-            // TotalStake is unchanged — same owner, same total reserved balance.
-
-            Self::deposit_event(Event::StakeMoved {
-                owner: owner.clone(),
-                to_node: to_node.clone(),
-                total_amount,
-            });
 
             Ok(())
         }
@@ -1859,13 +1802,7 @@ pub mod pallet {
             <OwnedNodesCount<T>>::mutate(new_owner, |c| *c = c.saturating_add(n_u32));
 
             if !stake_amount.is_zero() {
-                T::Currency::repatriate_reserved(
-                    current_owner,
-                    new_owner,
-                    stake_amount,
-                    BalanceStatus::Reserved,
-                )
-                .map_err(|_| Error::<T>::InsufficientStakedBalance)?;
+                Self::move_reserved_balance(current_owner, new_owner, stake_amount)?;
 
                 <TotalStake<T>>::try_mutate(current_owner, |total| -> Result<_, DispatchError> {
                     *total = Some(
