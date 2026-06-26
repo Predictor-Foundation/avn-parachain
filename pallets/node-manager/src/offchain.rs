@@ -145,17 +145,18 @@ impl<T: Config> Pallet<T> {
         }
     }
 
-    pub fn try_get_node_author(block_number: BlockNumberFor<T>) -> Option<Author<T>> {
+    pub fn try_get_node_author(block_number: BlockNumberFor<T>) -> Option<(Author<T>, bool)> {
         let setup_result = AVN::<T>::pre_run_setup(block_number, OCW_ID.to_vec());
         if let Ok((this_author, _)) = setup_result {
             let is_primary = AVN::<T>::is_primary_for_block(block_number, &this_author.account_id);
 
-            if is_primary.is_err() {
-                log::error!("💔 Error checking if author is Primary");
-                return None
+            match is_primary {
+                Err(_) => {
+                    log::error!("💔 Error checking if author is Primary");
+                    return Some((this_author, false))
+                },
+                Ok(is_primary) => return Some((this_author, is_primary)),
             }
-
-            return Some(this_author)
         }
 
         return None

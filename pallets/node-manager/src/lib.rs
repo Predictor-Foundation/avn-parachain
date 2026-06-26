@@ -350,7 +350,7 @@ pub mod pallet {
             Self {
                 _phantom: Default::default(),
                 max_batch_size: 1,
-                reward_period: 2,
+                reward_period: 4,
                 heartbeat_period: 1,
                 reward_amount_per_period: Default::default(),
                 num_periods_to_mint: 1,
@@ -368,6 +368,7 @@ pub mod pallet {
         fn build(&self) {
             assert!(self.reward_period > self.heartbeat_period);
             assert!(self.unstake_period_sec > 0);
+            assert!(self.heartbeat_period > 0);
             let default_threshold = Pallet::<T>::get_default_threshold();
 
             NextRewardPeriodLength::<T>::set(self.reward_period);
@@ -854,7 +855,11 @@ pub mod pallet {
 
         /// Offchain call: pay and remove up to `MAX_BATCH_SIZE` nodes in the oldest unpaid period.
         #[pallet::call_index(2)]
-        #[pallet::weight(<T as Config>::WeightInfo::offchain_pay_nodes(MAX_BATCH_SIZE))]
+        #[pallet::weight(
+            <T as Config>::WeightInfo::offchain_pay_nodes(MAX_BATCH_SIZE)
+                .saturating_add(T::AppChainInterface::reward_paid_weight(MAX_BATCH_SIZE))
+                .saturating_add(T::AppChainInterface::on_reward_period_completed_weight())
+        )]
         pub fn offchain_pay_nodes(
             origin: OriginFor<T>,
             reward_period_index: RewardPeriodIndex,
@@ -879,8 +884,12 @@ pub mod pallet {
 
             if total_uptime.total_weight == 0 && maybe_node_uptime.is_none() {
                 // No nodes to pay for this period so complete it
-                Self::complete_reward_payout(oldest_period);
-                return Ok(Some(<T as Config>::WeightInfo::offchain_pay_nodes(1u32)).into())
+                let completion_weight = Self::complete_reward_payout(oldest_period);
+                return Ok(Some(
+                    <T as Config>::WeightInfo::offchain_pay_nodes(1u32)
+                        .saturating_add(completion_weight),
+                )
+                .into())
             }
 
             ensure!(total_uptime.total_weight > 0, Error::<T>::TotalUptimeNotFound);
@@ -910,7 +919,7 @@ pub mod pallet {
 
             let pay = |node: &NodeId<T>,
                        uptime: UptimeInfo<BlockNumberFor<T>>|
-             -> Result<(), DispatchError> {
+             -> Result<Weight, DispatchError> {
                 let node_info =
                     NodeRegistry::<T>::get(node).ok_or(Error::<T>::NodeNotRegistered)?;
 
@@ -931,8 +940,7 @@ pub mod pallet {
                     &node_info,
                     reward_amount,
                     reward_percentage,
-                )?;
-                Ok(())
+                )
             };
 
             for (node, uptime) in iter.by_ref().take(MaxBatchSize::<T>::get() as usize) {
@@ -951,14 +959,23 @@ pub mod pallet {
 
             Self::remove_paid_nodes(oldest_period, &paid_nodes);
 
-            if iter.next().is_some() {
+            // Zero unless this call finishes the period; then it carries the app-chain completion
+            // hook weight so the post-dispatch weight stays accurate.
+            let completion_weight = if iter.next().is_some() {
                 Self::update_last_paid_pointer(oldest_period, last_node_paid);
+                Weight::zero()
             } else {
-                Self::complete_reward_payout(oldest_period);
-            }
-            return Ok(
-                Some(<T as Config>::WeightInfo::offchain_pay_nodes(paid_nodes.len() as u32)).into()
+                Self::complete_reward_payout(oldest_period)
+            };
+
+            return Ok(Some(
+                <T as Config>::WeightInfo::offchain_pay_nodes(paid_nodes.len() as u32)
+                    .saturating_add(T::AppChainInterface::reward_paid_weight(
+                        paid_nodes.len() as u32
+                    ))
+                    .saturating_add(completion_weight),
             )
+            .into())
         }
 
         /// Offchain call: Submit heartbeat to show node is still alive
@@ -1248,6 +1265,13 @@ pub mod pallet {
             ensure!(amount > BalanceOf::<T>::zero(), Error::<T>::ZeroAmount);
             ensure!(!PendingMintRequestState::<T>::exists(), Error::<T>::MintRequestInProgress);
 
+            // Check cap here for security reasons.
+            let runway = NextRewardAmountPerPeriod::<T>::get()
+                .checked_mul(&NumPeriodsToMint::<T>::get().into())
+                .ok_or(Error::<T>::MintAmountOverflow)?;
+            let max_mint_cap = runway.saturating_mul(MINT_SAFETY_CAP_MULTIPLIER.into());
+            ensure!(amount <= max_mint_cap, Error::<T>::MintAmountOverflow);
+
             let tx_id = Self::send_mint_to_ethereum(amount)?;
             PendingMintRequestState::<T>::put(PendingMintRequest {
                 tx_id,
@@ -1450,8 +1474,13 @@ pub mod pallet {
                 return
             }
 
-            let maybe_author = Self::try_get_node_author(n);
-            if let Some(author) = maybe_author {
+            let result = Self::try_get_node_author(n);
+            if let Some((author, is_primary)) = result {
+                if !is_primary {
+                    log::debug!("🛠️  OCW - author not primary, skipping");
+                    return
+                }
+
                 Self::trigger_mint_if_required(author.clone());
 
                 let oldest_unpaid_period = OldestUnpaidRewardPeriodIndex::<T>::get();

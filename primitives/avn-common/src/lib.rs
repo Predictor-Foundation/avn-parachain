@@ -57,6 +57,7 @@ pub mod event_types;
 pub mod http_data_codec;
 pub mod node;
 pub mod ocw_lock;
+use crate::node::Moment;
 pub use node as primitives;
 #[cfg(test)]
 #[path = "tests/test_event_discovery.rs"]
@@ -477,16 +478,28 @@ pub trait AppChainInterface {
     /// Called when a new reward period has started. Returns the weight consumed.
     fn on_new_reward_period(period_index: &RewardPeriodIndex) -> Weight;
 
-    /// Called when a node receives a reward.
+    /// Called when a node receives a reward. Returns the weight actually consumed.
+    ///
+    /// `auto_stake_expiry` (the node's auto-stake expiry, a UNIX timestamp in
+    /// seconds) is passed so app chains can conditionally decide whether/how to reward the node.
     fn on_reward_paid(
         period_index: &RewardPeriodIndex,
         node_owner: &Self::AccountId,
         node_id: &Self::AccountId,
+        auto_stake_expiry: Moment,
         reward_percentage: sp_runtime::Perquintill,
-    );
+    ) -> Weight;
 
-    /// Called when all rewards for `period_index` have been paid out.
-    fn on_reward_period_completed(period_index: &RewardPeriodIndex);
+    /// Worst-case weight to record rewards for `num_nodes` nodes settled in a single reward period.
+    fn reward_paid_weight(num_nodes: u32) -> Weight;
+
+    /// Called when all rewards for `period_index` have been paid out. Returns the weight consumed
+    /// so the caller can fold it into its post-dispatch weight.
+    fn on_reward_period_completed(period_index: &RewardPeriodIndex) -> Weight;
+
+    /// Worst-case weight a single `on_reward_period_completed` call can consume. Pure (no storage
+    /// access) so callers can include it in their pre-dispatch (`#[pallet::weight]`) bound.
+    fn on_reward_period_completed_weight() -> Weight;
 }
 
 pub struct NoopAppChainInterface<AccountId>(sp_std::marker::PhantomData<AccountId>);
@@ -502,11 +515,23 @@ impl<AccountId> AppChainInterface for NoopAppChainInterface<AccountId> {
         _period_index: &RewardPeriodIndex,
         _node_owner: &AccountId,
         _node_id: &AccountId,
+        _auto_stake_expiry: Moment,
         _reward_percentage: sp_runtime::Perquintill,
-    ) {
+    ) -> Weight {
+        Weight::zero()
     }
 
-    fn on_reward_period_completed(_period_index: &RewardPeriodIndex) {}
+    fn reward_paid_weight(_num_nodes: u32) -> Weight {
+        Weight::zero()
+    }
+
+    fn on_reward_period_completed(_period_index: &RewardPeriodIndex) -> Weight {
+        Weight::zero()
+    }
+
+    fn on_reward_period_completed_weight() -> Weight {
+        Weight::zero()
+    }
 }
 
 impl AppChainInterface for () {
@@ -520,11 +545,23 @@ impl AppChainInterface for () {
         _period_index: &RewardPeriodIndex,
         _node_owner: &(),
         _node_id: &(),
+        _auto_stake_expiry: Moment,
         _reward_percentage: sp_runtime::Perquintill,
-    ) {
+    ) -> Weight {
+        Weight::zero()
     }
 
-    fn on_reward_period_completed(_period_index: &RewardPeriodIndex) {}
+    fn reward_paid_weight(_num_nodes: u32) -> Weight {
+        Weight::zero()
+    }
+
+    fn on_reward_period_completed(_period_index: &RewardPeriodIndex) -> Weight {
+        Weight::zero()
+    }
+
+    fn on_reward_period_completed_weight() -> Weight {
+        Weight::zero()
+    }
 }
 
 #[derive(

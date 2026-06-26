@@ -56,8 +56,21 @@ impl<T: Config> Pallet<T> {
         node_info: &NodeInfo<T::SignerId, T::AccountId, BalanceOf<T>>,
         amount: BalanceOf<T>,
         reward_percentage: Perquintill,
-    ) -> DispatchResult {
+    ) -> Result<Weight, DispatchError> {
         let node_owner = node_info.owner.clone();
+        let mut hook_weight = Weight::zero();
+
+        if !reward_percentage.is_zero() {
+            // Notify app chains that a reward has been paid and return the weight of any work done
+            // by the hook.
+            hook_weight = T::AppChainInterface::on_reward_paid(
+                period,
+                &node_owner,
+                &node_id,
+                node_info.auto_stake_expiry,
+                reward_percentage,
+            );
+        }
 
         if amount.is_zero() {
             // Even if the reward is 0, we still want to emit the event for better visibility.
@@ -68,7 +81,7 @@ impl<T: Config> Pallet<T> {
                 amount,
             });
 
-            return Ok(())
+            return Ok(hook_weight)
         }
 
         let reward_pot_account_id = Self::compute_reward_account_id();
@@ -90,9 +103,6 @@ impl<T: Config> Pallet<T> {
             amount: net_reward,
         });
 
-        // Notify app chains that a reward has been paid
-        T::AppChainInterface::on_reward_paid(period, &node_owner, &node_id, reward_percentage);
-
         if reward_fee > Zero::zero() {
             // Pay the fee to the treasury
             if let Err(e) = T::RewardFeeHandler::pay_treasury(&reward_fee, &reward_pot_account_id) {
@@ -101,7 +111,7 @@ impl<T: Config> Pallet<T> {
         }
 
         if net_reward <= Zero::zero() {
-            return Ok(())
+            return Ok(hook_weight)
         }
 
         if Self::time_now_sec() < node_info.auto_stake_expiry || node_info.auto_stake_rewards {
@@ -122,7 +132,7 @@ impl<T: Config> Pallet<T> {
             }
         }
 
-        Ok(())
+        Ok(hook_weight)
     }
 
     pub fn remove_paid_nodes(
@@ -136,7 +146,9 @@ impl<T: Config> Pallet<T> {
         }
     }
 
-    pub fn complete_reward_payout(period_index: RewardPeriodIndex) {
+    /// Finalise a fully-paid period. Returns the weight consumed by the app-chain completion hook
+    /// so the caller can fold it into its post-dispatch weight.
+    pub fn complete_reward_payout(period_index: RewardPeriodIndex) -> Weight {
         if let Some(reward_pot) = RewardPot::<T>::get(period_index) {
             let paid_reward = reward_pot.total_reward;
             OutstandingRewardToPay::<T>::mutate(|outstanding| {
@@ -151,9 +163,10 @@ impl<T: Config> Pallet<T> {
         <RewardPot<T>>::remove(period_index);
 
         // Notify app chains that the reward period has been completed
-        T::AppChainInterface::on_reward_period_completed(&period_index);
+        let hook_weight = T::AppChainInterface::on_reward_period_completed(&period_index);
 
         Self::deposit_event(Event::RewardPayoutCompleted { reward_period_index: period_index });
+        hook_weight
     }
 
     pub fn update_last_paid_pointer(
